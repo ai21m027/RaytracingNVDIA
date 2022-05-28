@@ -52,13 +52,13 @@ void ClosestHit(inout HitInfo payload, Attributes attrib)
 void CubeClosestHit(inout HitInfo payload, Attributes attrib)
 {
     float3 barycentrics = float3(1.f - attrib.bary.x - attrib.bary.y, attrib.bary.x, attrib.bary.y);
-    float3 hitColor = float3(1, 0, 0.5);
+    float3 hitColor = float3(0.74, 0.89, 0.71);
     payload.colorAndDistance = float4(hitColor, RayTCurrent());
 }
 
 [shader("closesthit")] void PlaneClosestHit(inout HitInfo payload,
     Attributes attrib) {
-    float3 lightPos = float3(2, 2, -2);
+    float3 lightPos = float3(2, 3, -2);
     // Find the world - space hit position 
     float3 worldOrigin = WorldRayOrigin() + RayTCurrent() * WorldRayDirection();
     float3 lightDir = normalize(lightPos - worldOrigin);
@@ -113,6 +113,6 @@ void CubeClosestHit(inout HitInfo payload, Attributes attrib)
 
     float factor = shadowPayload.isHit ? 0.3 : 1.0;
     float3 barycentrics = float3(1.f - attrib.bary.x - attrib.bary.y, attrib.bary.x, attrib.bary.y);
-    float4 hitColor = float4(float3(0.7, 0.7, 0.3) * factor, RayTCurrent());
+    float4 hitColor = float4(float3(0.13, 0.55, 0.13) * factor, RayTCurrent());
     payload.colorAndDistance = float4(hitColor);
 }

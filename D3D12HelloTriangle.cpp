@@ -74,9 +74,6 @@ void D3D12HelloTriangle::OnInit() {
 
 }
 
-
-
-
 // Load the rendering pipeline dependencies.
 void D3D12HelloTriangle::LoadPipeline()
 {
@@ -312,6 +309,7 @@ void D3D12HelloTriangle::LoadAssets()
 		m_indexBufferView.SizeInBytes = indexBufferSize;
 
 		CreatePlaneVB();
+		CreateCubeVB();
 	}
 
 	// Create synchronization objects and wait until assets have been uploaded to the GPU.
@@ -406,10 +404,12 @@ void D3D12HelloTriangle::PopulateCommandList()
 		m_commandList->SetGraphicsRootDescriptorTable(0, m_constHeap->GetGPUDescriptorHandleForHeapStart());
 		m_commandList->ClearRenderTargetView(rtvHandle, clearColor, 0, nullptr);
 		m_commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-		m_commandList->IASetVertexBuffers(0, 1, &m_vertexBufferView);
-		m_commandList->IASetIndexBuffer(&m_indexBufferView);
-		m_commandList->DrawIndexedInstanced(12, 1, 0, 0, 0);
+		//m_commandList->IASetVertexBuffers(0, 1, &m_vertexBufferView);
+		//m_commandList->IASetIndexBuffer(&m_indexBufferView);
+		//m_commandList->DrawIndexedInstanced(12, 1, 0, 0, 0);
 		// #DXR Extra: Per-Instance Data
+		m_commandList->IASetVertexBuffers(0, 1, &m_cubeBufferView);
+		m_commandList->DrawInstanced(6 * 6, 1, 0, 0);
 		// In a way similar to triangle rendering, rasterize the plane
 		m_commandList->IASetVertexBuffers(0, 1, &m_planeBufferView);
 		m_commandList->DrawInstanced(6, 1, 0, 0);
@@ -505,7 +505,8 @@ void D3D12HelloTriangle::WaitForPreviousFrame()
 void D3D12HelloTriangle::CheckRaytracingSupport() {
 	D3D12_FEATURE_DATA_D3D12_OPTIONS5 options5 = {};
 	ThrowIfFailed(m_device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS5, &options5, sizeof(options5)));
-	if (options5.RaytracingTier < D3D12_RAYTRACING_TIER_1_0) throw std::runtime_error("Raytracing not supported on device");
+	if (options5.RaytracingTier < D3D12_RAYTRACING_TIER_1_0)
+		throw std::runtime_error("Raytracing not supported on device");
 }
 
 void D3D12HelloTriangle::OnKeyUp(UINT8 key)
@@ -558,8 +559,7 @@ AccelerationStructureBuffers D3D12HelloTriangle::CreateBottomLevelAS(std::vector
 // the instances, computing the memory requirements for the AS, and building the
 // AS itself
 //
-void D3D12HelloTriangle::CreateTopLevelAS(const std::vector<std::pair<ComPtr<ID3D12Resource>, DirectX::XMMATRIX>>& instances // pair of bottom level AS and matrix of the instance
-)
+void D3D12HelloTriangle::CreateTopLevelAS(const std::vector<std::pair<ComPtr<ID3D12Resource>, DirectX::XMMATRIX>>& instances)
 { 
 	// Gather all the instances into the builder helper
 	// #DXR Extra: Per-Instance Data
@@ -591,23 +591,25 @@ void D3D12HelloTriangle::CreateTopLevelAS(const std::vector<std::pair<ComPtr<ID3
 	m_topLevelASGenerator.Generate(m_commandList.Get(), m_topLevelASBuffers.pScratch.Get(), m_topLevelASBuffers.pResult.Get(), m_topLevelASBuffers.pInstanceDesc.Get());
 }
 
-
 //-----------------------------------------------------------------------------
 //
 // Combine the BLAS and TLAS builds to construct the entire acceleration
 // structure required to raytrace the scene
 //
-void D3D12HelloTriangle::CreateAccelerationStructures() {
+void D3D12HelloTriangle::CreateAccelerationStructures() 
+{
 	// Build the bottom AS from the Triangle vertex buffer
-	AccelerationStructureBuffers bottomLevelBuffers = CreateBottomLevelAS({ {m_vertexBuffer.Get(), 4} }, { {m_indexBuffer.Get(), 12} });
+	//AccelerationStructureBuffers bottomLevelBuffers = CreateBottomLevelAS({ {m_vertexBuffer.Get(), 4} }, { {m_indexBuffer.Get(), 12} });
+	AccelerationStructureBuffers cubeBottomLevelBuffers = CreateBottomLevelAS({ {m_CubeBuffer.Get(), 6 * 6} });
 	// Build the bottom AS from the Plane vertex buffer
 	AccelerationStructureBuffers planeBottomLevelBuffers = CreateBottomLevelAS({ {m_planeBuffer.Get(), 6} });
 	// #DXR Extra: Per-Instance Data
 	// 3 instances of the triangle
 	m_instances = {
-		{bottomLevelBuffers.pResult, XMMatrixIdentity()},
+		//{bottomLevelBuffers.pResult, XMMatrixIdentity()},
 		//{bottomLevelBuffers.pResult, XMMatrixTranslation(-.6f, 0, 0)},
 		//{bottomLevelBuffers.pResult, XMMatrixTranslation(.6f, 0, 0)},
+		{cubeBottomLevelBuffers.pResult, XMMatrixTranslation(0, 0, 0)},
 		{planeBottomLevelBuffers.pResult, XMMatrixTranslation(0, 0, 0)}
 	};
 	CreateTopLevelAS(m_instances);
@@ -624,7 +626,7 @@ void D3D12HelloTriangle::CreateAccelerationStructures() {
 	ThrowIfFailed(m_commandList->Reset(m_commandAllocator.Get(), m_pipelineState.Get()));
 	// Store the AS buffers. The rest of the buffers will be released once we exit 
 	// the function 
-	m_bottomLevelAS = bottomLevelBuffers.pResult;
+	m_bottomLevelAS = cubeBottomLevelBuffers.pResult;
 }
 
 //-----------------------------------------------------------------------------
@@ -671,7 +673,6 @@ ComPtr<ID3D12RootSignature> D3D12HelloTriangle::CreateMissSignature() {
 	nv_helpers_dx12::RootSignatureGenerator rsc;
 	return rsc.Generate(m_device.Get(), true);
 }
-
 
 //-----------------------------------------------------------------------------
 //
@@ -857,8 +858,11 @@ void D3D12HelloTriangle::CreateShaderBindingTable() {
 	// as a root parameter in its primary hit shader. The shadow hit only sets a
 	// boolean visibility in the payload, and does not require external data
 	//for (int i = 0; i < 3; ++i) {
-	m_sbtHelper.AddHitGroup(L"HitGroup", { (void*)(m_vertexBuffer->GetGPUVirtualAddress()), (void*)(m_indexBuffer->GetGPUVirtualAddress()) });
+	//m_sbtHelper.AddHitGroup(L"HitGroup", { (void*)(m_vertexBuffer->GetGPUVirtualAddress()), (void*)(m_indexBuffer->GetGPUVirtualAddress()) });
 	//}
+	m_sbtHelper.AddHitGroup(L"CubeHitGroup", {});
+
+
 	m_sbtHelper.AddHitGroup(L"ShadowHitGroup", {});
 	// #DXR Extra: Per-Instance Data
 	// Adding the plane
@@ -972,12 +976,12 @@ void D3D12HelloTriangle::OnMouseMove(UINT8 wParam, UINT32 lParam)
 void D3D12HelloTriangle::CreatePlaneVB() {
 	// Define the geometry for a plane. 
 	Vertex planeVertices[] = {
-		{{-1.5f, -.8f, 01.5f}, {1.0f, 0.0f, 0.5f, 1.0f}}, // 0 
-		{{-1.5f, -.8f, -1.5f}, {1.0f, 0.0f, 0.5f, 1.0f}}, // 1 
-		{{01.5f, -.8f, 01.5f}, {1.0f, 0.0f, 0.5f, 1.0f}}, // 2 
-		{{01.5f, -.8f, 01.5f}, {1.0f, 0.0f, 0.5f, 1.0f}}, // 2 
-		{{-1.5f, -.8f, -1.5f}, {1.0f, 0.0f, 0.5f, 1.0f}}, // 1 
-		{{01.5f, -.8f, -1.5f}, {1.0f, 0.0f, 0.5f, 1.0f}} // 4 
+		{{-5.5f, -.8f, 05.5f}, {1.0f, 0.0f, 0.5f, 1.0f}}, // 0 
+		{{-5.5f, -.8f, -5.5f}, {1.0f, 0.0f, 0.5f, 1.0f}}, // 1 
+		{{05.5f, -.8f, 05.5f}, {1.0f, 0.0f, 0.5f, 1.0f}}, // 2 
+		{{05.5f, -.8f, 05.5f}, {1.0f, 0.0f, 0.5f, 1.0f}}, // 2 
+		{{-5.5f, -.8f, -5.5f}, {1.0f, 0.0f, 0.5f, 1.0f}}, // 1 
+		{{05.5f, -.8f, -5.5f}, {1.0f, 0.0f, 0.5f, 1.0f}} // 4 
 	};
 	const UINT planeBufferSize = sizeof(planeVertices);
 
