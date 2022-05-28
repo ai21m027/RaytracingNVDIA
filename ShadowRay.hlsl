@@ -1,4 +1,3 @@
-#include "Common.hlsl"
 
 // #DXR Extra - Another ray type
 // Ray payload for the shadow rays

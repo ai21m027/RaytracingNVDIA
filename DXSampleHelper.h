@@ -19,7 +19,7 @@ inline void ThrowIfFailed(HRESULT hr)
 	{
 		throw std::exception();
 	}
-}
+}  
 
 inline void GetAssetsPath(_Out_writes_(pathSize) WCHAR* path, UINT pathSize)
 {

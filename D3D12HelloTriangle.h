@@ -10,7 +10,7 @@
 //*********************************************************
 
 #pragma once
-#include <stdexcept>
+//#include <stdexcept>
 #include "DXSample.h"
 #include <dxcapi.h>
 #include <vector>
@@ -53,8 +53,8 @@ public:
 	virtual void OnDestroy();
 	void CheckRaytracingSupport();
 	// #DXR Extra: Perspective Camera++
-	void OnButtonDown(UINT32 lParam);
-	void OnMouseMove(UINT8 wParam, UINT32 lParam);
+	virtual void OnButtonDown(UINT32 lParam);
+	virtual void OnMouseMove(UINT8 wParam, UINT32 lParam);
 
 private:
 	static const UINT FrameCount = 2;
@@ -106,9 +106,7 @@ private:
 	///
 	/// \param vVertexBuffers : pair of buffer and vertex count
 	/// \return AccelerationStructureBuffers for TLAS
-	AccelerationStructureBuffers
-		CreateBottomLevelAS(std::vector<std::pair<ComPtr<ID3D12Resource>, uint32_t>> vVertexBuffers);
-	/// Create the main acceleration structure that holds
+	AccelerationStructureBuffers CreateBottomLevelAS(std::vector<std::pair<ComPtr<ID3D12Resource>, uint32_t>> vVertexBuffers, std::vector<std::pair<ComPtr<ID3D12Resource>, uint32_t>> vIndexBuffers = {});/// Create the main acceleration structure that holds
 	/// all instances of the scene
 	/// \param instances : pair of BLAS and transform
 	void CreateTopLevelAS(const std::vector<std::pair<ComPtr<ID3D12Resource>, DirectX::XMMATRIX>>& instances);
@@ -145,5 +143,28 @@ private:
 	ComPtr< ID3D12Resource > m_cameraBuffer;
 	ComPtr< ID3D12DescriptorHeap > m_constHeap;
 	uint32_t m_cameraBufferSize = 0;
+	// #DXR Extra: Per-Instance Data
+	ComPtr<ID3D12Resource> m_planeBuffer;
+	D3D12_VERTEX_BUFFER_VIEW m_planeBufferView;
+	void CreatePlaneVB();
 
+	// Cube
+	ComPtr<ID3D12Resource> m_CubeBuffer;
+	D3D12_VERTEX_BUFFER_VIEW m_cubeBufferView;
+	void CreateCubeVB();
+
+	void CreateGlobalConstantBuffer();
+	ComPtr<ID3D12Resource> m_globalConstantBuffer;
+	// #DXR Extra: Per-Instance Data
+	void CreatePerInstanceConstantBuffers();
+	std::vector<ComPtr<ID3D12Resource>> m_perInstanceConstantBuffers;
+	// #DXR Extra: Depth Buffering
+	void CreateDepthBuffer();
+	ComPtr<ID3D12DescriptorHeap> m_dsvHeap;
+	ComPtr<ID3D12Resource> m_depthStencil;
+	ComPtr<ID3D12Resource> m_indexBuffer;
+	D3D12_INDEX_BUFFER_VIEW m_indexBufferView;
+	// #DXR Extra - Another ray type
+	ComPtr<IDxcBlob> m_shadowLibrary;
+	ComPtr<ID3D12RootSignature> m_shadowSignature;
 };
