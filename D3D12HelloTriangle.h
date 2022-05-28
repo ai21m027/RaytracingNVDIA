@@ -15,6 +15,8 @@
 #include <dxcapi.h>
 #include <vector>
 #include "nv_helpers_dx12/TopLevelASGenerator.h"
+#include "nv_helpers_dx12/ShaderBindingTableGenerator.h"
+
 
 using namespace DirectX;
 
@@ -24,6 +26,21 @@ using namespace DirectX;
 // referenced by the GPU.
 // An example of this can be found in the class method: OnDestroy().
 using Microsoft::WRL::ComPtr;
+
+
+// #DXR
+struct AccelerationStructureBuffers
+{
+	// Scratch memory for AS builder 
+	ComPtr<ID3D12Resource> pScratch;
+	// Where the AS is 
+	ComPtr<ID3D12Resource> pResult;
+	// Hold the matrices of the instances
+	ComPtr<ID3D12Resource> pInstanceDesc;
+};
+
+
+
 
 class D3D12HelloTriangle : public DXSample
 {
@@ -35,7 +52,9 @@ public:
 	virtual void OnRender();
 	virtual void OnDestroy();
 	void CheckRaytracingSupport();
-	
+	// #DXR Extra: Perspective Camera++
+	void OnButtonDown(UINT32 lParam);
+	void OnMouseMove(UINT8 wParam, UINT32 lParam);
 
 private:
 	static const UINT FrameCount = 2;
@@ -78,17 +97,8 @@ private:
 	void PopulateCommandList();
 	void WaitForPreviousFrame();
 
-	// #DXR
-	struct AccelerationStructureBuffers
-	{
-		ComPtr<ID3D12Resource> pScratch;
-		// Scratch memory for AS builder
-		ComPtr<ID3D12Resource> pResult;
-		// Where the AS is 
-		ComPtr<ID3D12Resource> pInstanceDesc;
-		// Hold the matrices of the instances
-	};
-	ComPtr<ID3D12Resource> m_bottomLevelAS; // Storage for the bottom Level AS
+	// Storage for the bottom Level AS
+	ComPtr<ID3D12Resource> m_bottomLevelAS;
 	nv_helpers_dx12::TopLevelASGenerator m_topLevelASGenerator;
 	AccelerationStructureBuffers m_topLevelASBuffers;
 	std::vector<std::pair<ComPtr<ID3D12Resource>, DirectX::XMMATRIX>> m_instances;
@@ -104,4 +114,36 @@ private:
 	void CreateTopLevelAS(const std::vector<std::pair<ComPtr<ID3D12Resource>, DirectX::XMMATRIX>>& instances);
 	/// Create all acceleration structures, bottom and top
 	void CreateAccelerationStructures();
+	// #DXR
+	ComPtr<ID3D12RootSignature> CreateRayGenSignature();
+	ComPtr<ID3D12RootSignature> CreateMissSignature();
+	ComPtr<ID3D12RootSignature> CreateHitSignature();
+	void CreateRaytracingPipeline();
+	ComPtr<IDxcBlob> m_rayGenLibrary;
+	ComPtr<IDxcBlob> m_hitLibrary;
+	ComPtr<IDxcBlob> m_missLibrary;
+	ComPtr<ID3D12RootSignature> m_rayGenSignature;
+	ComPtr<ID3D12RootSignature> m_hitSignature;
+	ComPtr<ID3D12RootSignature> m_missSignature;
+	// Ray tracing pipeline state
+	ComPtr<ID3D12StateObject> m_rtStateObject;
+	// Ray tracing pipeline state properties, retaining the shader identifiers
+	// to use in the Shader Binding Table
+	ComPtr<ID3D12StateObjectProperties> m_rtStateObjectProps;
+	void CreateRaytracingOutputBuffer();
+	void CreateShaderResourceHeap();
+	ComPtr<ID3D12Resource> m_outputResource;
+	ComPtr<ID3D12DescriptorHeap> m_srvUavHeap;
+	// #DXR
+	void CreateShaderBindingTable();
+	nv_helpers_dx12::ShaderBindingTableGenerator m_sbtHelper;
+	ComPtr<ID3D12Resource> m_sbtStorage;
+
+	// #DXR Extra: Perspective Camera
+	void CreateCameraBuffer();
+	void UpdateCameraBuffer();
+	ComPtr< ID3D12Resource > m_cameraBuffer;
+	ComPtr< ID3D12DescriptorHeap > m_constHeap;
+	uint32_t m_cameraBufferSize = 0;
+
 };

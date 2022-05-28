@@ -39,6 +39,7 @@
     <ClInclude Include="nv_helpers_dx12\RootSignatureGenerator.h" />
     <ClInclude Include="nv_helpers_dx12\ShaderBindingTableGenerator.h" />
     <ClInclude Include="nv_helpers_dx12\TopLevelASGenerator.h" />
+    <ClInclude Include="nv_helpers_dx12\Manipulator.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="stdafx.cpp">
@@ -61,10 +62,18 @@
     <ClCompile Include="nv_helpers_dx12\RootSignatureGenerator.cpp" />
     <ClCompile Include="nv_helpers_dx12\ShaderBindingTableGenerator.cpp" />
     <ClCompile Include="nv_helpers_dx12\TopLevelASGenerator.cpp" />
+    <ClCompile Include="nv_helpers_dx12\Manipulator.cpp" />
   </ItemGroup>
   <ItemGroup>
     <CustomBuild Include="shaders.hlsl">
       <Filter>Assets\Shaders</Filter>
     </CustomBuild>
+  </ItemGroup>
+  <ItemGroup>
+    <FxCompile Include="Common.hlsl" />
+    <FxCompile Include="ShadowRay.hlsl" />
+    <FxCompile Include="Miss.hlsl" />
+    <FxCompile Include="RayGen.hlsl" />
+    <FxCompile Include="Hit.hlsl" />
   </ItemGroup>
 </Project>

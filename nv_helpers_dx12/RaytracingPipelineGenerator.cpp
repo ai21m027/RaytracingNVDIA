@@ -268,7 +268,7 @@ ID3D12StateObject* RayTracingPipelineGenerator::Generate()
   // Describe the ray tracing pipeline state object
   D3D12_STATE_OBJECT_DESC pipelineDesc = {};
   pipelineDesc.Type = D3D12_STATE_OBJECT_TYPE_RAYTRACING_PIPELINE;
-  pipelineDesc.NumSubobjects = currentIndex; // static_cast<UINT>(subobjects.size());
+  pipelineDesc.NumSubobjects = currentIndex; //static_cast<UINT>(subobjects.size());
   pipelineDesc.pSubobjects = subobjects.data();
 
   ID3D12StateObject* rtStateObject = nullptr;

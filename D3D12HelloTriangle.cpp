@@ -10,10 +10,20 @@
 //*********************************************************
 
 #include <stdexcept>
+
 #include "stdafx.h"
 #include "D3D12HelloTriangle.h"
+
+
 #include "DXRHelper.h"
 #include "nv_helpers_dx12/BottomLevelASGenerator.h"
+#include "nv_helpers_dx12/RaytracingPipelineGenerator.h"
+#include "nv_helpers_dx12/RootSignatureGenerator.h"
+#include "nv_helpers_dx12/Manipulator.h"
+
+#include "glm/gtc/type_ptr.hpp"
+
+#include "Windowsx.h"
 
 D3D12HelloTriangle::D3D12HelloTriangle(UINT width, UINT height, std::wstring name) :
 	DXSample(width, height, name),
@@ -25,6 +35,8 @@ D3D12HelloTriangle::D3D12HelloTriangle(UINT width, UINT height, std::wstring nam
 }
 
 void D3D12HelloTriangle::OnInit() {
+	nv_helpers_dx12::CameraManip.setWindowSize(GetWidth(), GetHeight());
+	nv_helpers_dx12::CameraManip.setLookat(glm::vec3(1.5f, 1.5f, 1.5f), glm::vec3(0, 0, 0), glm::vec3(0, 1, 0));
 	LoadPipeline();
 	LoadAssets();
 	// Check the raytracing capabilities of the device
@@ -36,6 +48,24 @@ void D3D12HelloTriangle::OnInit() {
 	// nothing to record yet. The main loop expects it to be closed, so 
 	// close it now. 
 	ThrowIfFailed(m_commandList->Close());
+	// Create the raytracing pipeline, associating the shader code to symbol names
+	// and to their root signatures, and defining the amount of memory carried by
+	// rays (ray payload)
+	CreateRaytracingPipeline(); // #DXR
+	// Allocate the buffer storing the raytracing output, with the same dimensions
+	// as the target image
+	CreateRaytracingOutputBuffer(); // #DXR
+	// Create the buffer containing the raytracing result (always output in a
+	// UAV), and create the heap referencing the resources used by the raytracing,
+	// such as the acceleration structure
+	// #DXR Extra: Perspective Camera
+	// Create a buffer to store the modelview and perspective camera matrices
+	CreateCameraBuffer();
+	CreateShaderResourceHeap(); // #DXR
+	// Create the shader binding table and indicating which shaders
+	// are invoked for each instance in the AS
+	CreateShaderBindingTable();
+
 }
 
 
@@ -46,8 +76,7 @@ void D3D12HelloTriangle::OnInit() {
 // in 3 steps: gathering the geometry, computing the sizes of the required
 // buffers, and building the actual AS
 //
-D3D12HelloTriangle::AccelerationStructureBuffers
-D3D12HelloTriangle::CreateBottomLevelAS(std::vector<std::pair<ComPtr<ID3D12Resource>, uint32_t>> vVertexBuffers) {
+AccelerationStructureBuffers D3D12HelloTriangle::CreateBottomLevelAS(std::vector<std::pair<ComPtr<ID3D12Resource>, uint32_t>> vVertexBuffers) {
 	nv_helpers_dx12::BottomLevelASGenerator bottomLevelAS; 
 	// Adding all vertex buffers and not transforming their position.
 	for (const auto &buffer : vVertexBuffers) 
@@ -82,7 +111,7 @@ void D3D12HelloTriangle::CreateTopLevelAS(const std::vector<std::pair<ComPtr<ID3
 ) 
 { // Gather all the instances into the builder helper
 	for (size_t i = 0; i < instances.size(); i++)
-	{ m_topLevelASGenerator.AddInstance(instances[i].first.Get(), instances[i].second, static_cast<UINT>(i), static_cast<UINT>(0)); }
+	{ m_topLevelASGenerator.AddInstance(instances[i].first.Get(), instances[i].second, static_cast<UINT>(i), static_cast<UINT>(i)); }
 	// As for the bottom-level AS, the building the AS requires some scratch space 
 	// to store temporary data in addition to the actual AS. In the case of the 
 	// top-level AS, the instance descriptors also need to be stored in GPU 
@@ -115,12 +144,14 @@ void D3D12HelloTriangle::CreateAccelerationStructures() {
 	// Build the bottom AS from the Triangle vertex buffer 
 	AccelerationStructureBuffers bottomLevelBuffers = CreateBottomLevelAS({{m_vertexBuffer.Get(), 3}});
 	// Just one instance for now 
-	m_instances = {{bottomLevelBuffers.pResult, XMMatrixIdentity()}}; CreateTopLevelAS(m_instances);
+	m_instances = {{bottomLevelBuffers.pResult, XMMatrixIdentity()}};
+	CreateTopLevelAS(m_instances);
 	// Flush the command list and wait for it to finish 
 	m_commandList->Close();
 	ID3D12CommandList *ppCommandLists[] = {m_commandList.Get()};
 	m_commandQueue->ExecuteCommandLists(1, ppCommandLists);
-	m_fenceValue++; m_commandQueue->Signal(m_fence.Get(), m_fenceValue);
+	m_fenceValue++;
+	m_commandQueue->Signal(m_fence.Get(), m_fenceValue);
 	m_fence->SetEventOnCompletion(m_fenceValue, m_fenceEvent);
 	WaitForSingleObject(m_fenceEvent, INFINITE);
 	// Once the command list is finished executing, reset it to be reused for 
@@ -131,6 +162,116 @@ void D3D12HelloTriangle::CreateAccelerationStructures() {
 	m_bottomLevelAS = bottomLevelBuffers.pResult;
 }
 
+//-----------------------------------------------------------------------------
+// The ray generation shader needs to access 2 resources: the raytracing output
+// and the top-level acceleration structure
+//
+ComPtr<ID3D12RootSignature> D3D12HelloTriangle::CreateRayGenSignature() {
+	nv_helpers_dx12::RootSignatureGenerator rsc;
+	rsc.AddHeapRangesParameter({ {0 /*u0*/, 1 /*1 descriptor */, 0 /*use the implicit register space 0*/, D3D12_DESCRIPTOR_RANGE_TYPE_UAV /* UAV representing the output buffer*/, 0 /*heap slot where the UAV is defined*/}, {0 /*t0*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_SRV /*Top-level acceleration structure*/, 1}, {0 /*b0*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_CBV /*Camera parameters*/, 2} });
+	return rsc.Generate(m_device.Get(), true);
+}
+
+//-----------------------------------------------------------------------------
+// The hit shader communicates only through the ray payload, and therefore does
+// not require any resources
+//
+ComPtr<ID3D12RootSignature> D3D12HelloTriangle::CreateHitSignature() {
+	nv_helpers_dx12::RootSignatureGenerator rsc;
+	rsc.AddRootParameter(D3D12_ROOT_PARAMETER_TYPE_SRV);
+	return rsc.Generate(m_device.Get(), true);
+}
+
+//-----------------------------------------------------------------------------
+// The miss shader communicates only through the ray payload, and therefore
+// does not require any resources
+//
+ComPtr<ID3D12RootSignature> D3D12HelloTriangle::CreateMissSignature() {
+	nv_helpers_dx12::RootSignatureGenerator rsc;
+	return rsc.Generate(m_device.Get(), true);
+}
+
+//-----------------------------------------------------------------------------
+//
+// The raytracing pipeline binds the shader code, root signatures and pipeline
+// characteristics in a single structure used by DXR to invoke the shaders and
+// manage temporary memory during raytracing
+//
+//
+void D3D12HelloTriangle::CreateRaytracingPipeline()
+{
+	nv_helpers_dx12::RayTracingPipelineGenerator pipeline(m_device.Get());
+	// The pipeline contains the DXIL code of all the shaders potentially executed 
+	// during the raytracing process. This section compiles the HLSL code into a 
+	// set of DXIL libraries. We chose to separate the code in several libraries 
+	// by semantic (ray generation, hit, miss) for clarity. Any code layout can be 
+	// used. 
+	m_rayGenLibrary = nv_helpers_dx12::CompileShaderLibrary(L"RayGen.hlsl");
+	m_missLibrary = nv_helpers_dx12::CompileShaderLibrary(L"Miss.hlsl");
+	m_hitLibrary = nv_helpers_dx12::CompileShaderLibrary(L"Hit.hlsl");
+	// In a way similar to DLLs, each library is associated with a number of 
+	// exported symbols. This 
+	// has to be done explicitly in the lines below. Note that a single library 
+	// can contain an arbitrary number of symbols, whose semantic is given in HLSL 
+	// using the [shader("xxx")] syntax 
+	pipeline.AddLibrary(m_rayGenLibrary.Get(), { L"RayGen" });
+	pipeline.AddLibrary(m_missLibrary.Get(), { L"Miss" });
+	pipeline.AddLibrary(m_hitLibrary.Get(), { L"ClosestHit" });
+	// To be used, each DX12 shader needs a root signature defining which 
+
+	m_rayGenSignature = CreateRayGenSignature();
+	m_missSignature = CreateMissSignature();
+	m_hitSignature = CreateHitSignature();
+	// 3 different shaders can be invoked to obtain an intersection: an 
+	// intersection shader is called 
+	// when hitting the bounding box of non-triangular geometry. This is beyond 
+	// the scope of this tutorial. An any-hit shader is called on potential 
+	// intersections. This shader can, for example, perform alpha-testing and 
+	// discard some intersections. Finally, the closest-hit program is invoked on 
+	// the intersection point closest to the ray origin. Those 3 shaders are bound 
+	// together into a hit group. 
+	// Note that for triangular geometry the intersection shader is built-in. An 
+	// empty any-hit shader is also defined by default, so in our simple case each 
+	// hit group contains only the closest hit shader. Note that since the 
+	// exported symbols are defined above the shaders can be simply referred to by 
+	// name. 
+	// Hit group for the triangles, with a shader simply interpolating vertex 
+
+	pipeline.AddHitGroup(L"HitGroup", L"ClosestHit");
+	// The following section associates the root signature to each shader. Note 
+	// that we can explicitly show that some shaders share the same root signature 
+	// (eg. Miss and ShadowMiss). Note that the hit shaders are now only referred 
+	// to as hit groups, meaning that the underlying intersection, any-hit and 
+	// closest-hit shaders share the same root signature. 
+	pipeline.AddRootSignatureAssociation(m_rayGenSignature.Get(), { L"RayGen" });
+	pipeline.AddRootSignatureAssociation(m_missSignature.Get(), { L"Miss" });
+	pipeline.AddRootSignatureAssociation(m_hitSignature.Get(), { L"HitGroup" });
+	// The payload size defines the maximum size of the data carried by the rays, 
+// ie. the the data 
+// exchanged between shaders, such as the HitInfo structure in the HLSL code. 
+// It is important to keep this value as low as possible as a too high value 
+// would result in unnecessary memory consumption and cache trashing. 
+	pipeline.SetMaxPayloadSize(4 * sizeof(float));
+	// RGB + distance 
+	// Upon hitting a surface, DXR can provide several attributes to the hit. In 
+	// our sample we just use the barycentric coordinates defined by the weights 
+	// u,v of the last two vertices of the triangle. The actual barycentrics can 
+	// be obtained using float3 barycentrics = float3(1.f-u-v, u, v); 
+	pipeline.SetMaxAttributeSize(2 * sizeof(float));
+	// barycentric coordinates 
+	// The raytracing process can shoot rays from existing hit points, resulting 
+	// in nested TraceRay calls. Our sample code traces only primary rays, which 
+	// then requires a trace depth of 1. Note that this recursion depth should be 
+	// kept to a minimum for best performance. Path tracing algorithms can be 
+	// easily flattened into a simple loop in the ray generation. 
+	pipeline.SetMaxRecursionDepth(1);
+	// Compile the pipeline for execution on the GPU 
+	m_rtStateObject = pipeline.Generate();
+	// Cast the state object into a properties object, allowing to later access 
+	// the shader pointers by name 
+	ThrowIfFailed(m_rtStateObject->QueryInterface(IID_PPV_ARGS(&m_rtStateObjectProps)));
+}
+
 
 
 void D3D12HelloTriangle::OnKeyUp(UINT8 key)
@@ -138,10 +279,109 @@ void D3D12HelloTriangle::OnKeyUp(UINT8 key)
 	if (key == VK_SPACE) { m_raster = !m_raster; }
 }
 
-void D3D12HelloTriangle::CheckRaytracingSupport() {
-	D3D12_FEATURE_DATA_D3D12_OPTIONS5 options5 = {};
-	ThrowIfFailed(m_device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS5, &options5, sizeof(options5)));
-	if (options5.RaytracingTier < D3D12_RAYTRACING_TIER_1_0) throw std::runtime_error("Raytracing not supported on device");
+void D3D12HelloTriangle::CheckRaytracingSupport() { 
+    D3D12_FEATURE_DATA_D3D12_OPTIONS5 options5 = {};
+    ThrowIfFailed(m_device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS5, &options5, sizeof(options5))); 
+    if (options5.RaytracingTier < D3D12_RAYTRACING_TIER_1_0) throw std::runtime_error("Raytracing not supported on device");
+}
+
+void D3D12HelloTriangle::CreateRaytracingOutputBuffer() {
+	D3D12_RESOURCE_DESC resDesc = {};
+	resDesc.DepthOrArraySize = 1;
+	resDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+	// The backbuffer is actually DXGI_FORMAT_R8G8B8A8_UNORM_SRGB, but sRGB 
+	// formats cannot be used with UAVs. For accuracy we should convert to sRGB 
+	// ourselves in the shader 
+	resDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+	resDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+	resDesc.Width = GetWidth();
+	resDesc.Height = GetHeight();
+	resDesc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+	resDesc.MipLevels = 1;
+	resDesc.SampleDesc.Count = 1;
+	ThrowIfFailed(m_device->CreateCommittedResource(&nv_helpers_dx12::kDefaultHeapProps, D3D12_HEAP_FLAG_NONE, &resDesc, D3D12_RESOURCE_STATE_COPY_SOURCE, nullptr, IID_PPV_ARGS(&m_outputResource)));
+}
+
+//-----------------------------------------------------------------------------
+//
+// Create the main heap used by the shaders, which will give access to the
+// raytracing output and the top-level acceleration structure
+//
+void D3D12HelloTriangle::CreateShaderResourceHeap()
+{
+	// #DXR Extra: Perspective Camera
+	// Create a SRV/UAV/CBV descriptor heap. We need 3 entries - 1 SRV for the TLAS, 1 UAV for the
+	// raytracing output and 1 CBV for the camera matrices
+	m_srvUavHeap = nv_helpers_dx12::CreateDescriptorHeap(m_device.Get(), 3, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, true);
+	// Get a handle to the heap memory on the CPU side, to be able to write the #
+	// descriptors directly 
+	D3D12_CPU_DESCRIPTOR_HANDLE srvHandle = m_srvUavHeap->GetCPUDescriptorHandleForHeapStart();
+	// Create the UAV. Based on the root signature we created it is the first 
+	// entry. The Create*View methods write the view information directly into 
+	// srvHandle 
+	D3D12_UNORDERED_ACCESS_VIEW_DESC uavDesc = {};
+	uavDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
+	m_device->CreateUnorderedAccessView(m_outputResource.Get(), nullptr, &uavDesc, srvHandle);
+	// Add the Top Level AS SRV right after the raytracing output buffer 
+	srvHandle.ptr += m_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+	D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc;
+	srvDesc.Format = DXGI_FORMAT_UNKNOWN;
+	srvDesc.ViewDimension = D3D12_SRV_DIMENSION_RAYTRACING_ACCELERATION_STRUCTURE;
+	srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+	srvDesc.RaytracingAccelerationStructure.Location = m_topLevelASBuffers.pResult->GetGPUVirtualAddress();
+	// Write the acceleration structure view in the heap 
+	m_device->CreateShaderResourceView(nullptr, &srvDesc, srvHandle);
+
+	// #DXR Extra: Perspective Camera
+	// Add the constant buffer for the camera after the TLAS
+	srvHandle.ptr += m_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+	// Describe and create a constant buffer view for the camera
+	D3D12_CONSTANT_BUFFER_VIEW_DESC cbvDesc = {};
+	cbvDesc.BufferLocation = m_cameraBuffer->GetGPUVirtualAddress();
+	cbvDesc.SizeInBytes = m_cameraBufferSize;
+	m_device->CreateConstantBufferView(&cbvDesc, srvHandle);
+}
+
+//-----------------------------------------------------------------------------
+//
+// The Shader Binding Table (SBT) is the cornerstone of the raytracing setup:
+// this is where the shader resources are bound to the shaders, in a way that
+// can be interpreted by the raytracer on GPU. In terms of layout, the SBT
+// contains a series of shader IDs with their resource pointers. The SBT
+// contains the ray generation shader, the miss shaders, then the hit groups.
+// Using the helper class, those can be specified in arbitrary order.
+//
+void D3D12HelloTriangle::CreateShaderBindingTable() {
+	// The SBT helper class collects calls to Add*Program. If called several 
+	// times, the helper must be emptied before re-adding shaders. 
+	m_sbtHelper.Reset();
+	// The pointer to the beginning of the heap is the only parameter required by 
+	// shaders without root parameters 
+	D3D12_GPU_DESCRIPTOR_HANDLE srvUavHeapHandle = m_srvUavHeap->GetGPUDescriptorHandleForHeapStart();
+	// The helper treats both root parameter pointers and heap pointers as void*, 
+	// while DX12 uses the 
+	// D3D12_GPU_DESCRIPTOR_HANDLE to define heap pointers. The pointer in this 
+	// struct is a UINT64, which then has to be reinterpreted as a pointer. 
+	auto heapPointer = reinterpret_cast<UINT64*>(srvUavHeapHandle.ptr);
+	// The ray generation only uses heap data 
+	m_sbtHelper.AddRayGenerationProgram(L"RayGen", { heapPointer });
+	// The miss and hit shaders do not access any external resources: instead they 
+	// communicate their results through the ray payload 
+	m_sbtHelper.AddMissProgram(L"Miss", {});
+	// Adding the triangle hit shader 
+	m_sbtHelper.AddHitGroup(L"HitGroup", { (void*)(m_vertexBuffer->GetGPUVirtualAddress()) });
+	// Compute the size of the SBT given the number of shaders and their 
+
+	uint32_t sbtSize = m_sbtHelper.ComputeSBTSize();
+	// Create the SBT on the upload heap. This is required as the helper will use 
+	// mapping to write the SBT contents. After the SBT compilation it could be 
+	// copied to the default heap for performance. 
+	m_sbtStorage = nv_helpers_dx12::CreateBuffer(m_device.Get(), sbtSize, D3D12_RESOURCE_FLAG_NONE, D3D12_RESOURCE_STATE_GENERIC_READ, nv_helpers_dx12::kUploadHeapProps);
+	if (!m_sbtStorage) {
+		throw std::logic_error("Could not allocate the shader binding table");
+	}
+	// Compile the SBT from the shader and parameters info 
+	m_sbtHelper.Generate(m_sbtStorage.Get(), m_rtStateObjectProps.Get());
 }
 
 
@@ -255,11 +495,18 @@ void D3D12HelloTriangle::LoadPipeline()
 // Load the sample assets.
 void D3D12HelloTriangle::LoadAssets()
 {
-	// Create an empty root signature.
+	// #DXR Extra: Perspective Camera
+	// The root signature describes which data is accessed by the shader. The camera matrices are held
+	// in a constant buffer, itself referenced the heap. To do this we reference a range in the heap,
+	// and use that range as the sole parameter of the shader. The camera buffer is associated in the
+	// index 0, making it accessible in the shader in the b0 register.
 	{
+		CD3DX12_ROOT_PARAMETER constantParameter;
+		CD3DX12_DESCRIPTOR_RANGE range;
+		range.Init(D3D12_DESCRIPTOR_RANGE_TYPE_CBV, 1, 0);
+		constantParameter.InitAsDescriptorTable(1, &range, D3D12_SHADER_VISIBILITY_ALL);
 		CD3DX12_ROOT_SIGNATURE_DESC rootSignatureDesc;
-		rootSignatureDesc.Init(0, nullptr, 0, nullptr, D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT);
-
+		rootSignatureDesc.Init(1, &constantParameter, 0, nullptr, D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT);
 		ComPtr<ID3DBlob> signature;
 		ComPtr<ID3DBlob> error;
 		ThrowIfFailed(D3D12SerializeRootSignature(&rootSignatureDesc, D3D_ROOT_SIGNATURE_VERSION_1, &signature, &error));
@@ -316,9 +563,9 @@ void D3D12HelloTriangle::LoadAssets()
 		// Define the geometry for a triangle.
 		Vertex triangleVertices[] =
 		{
-			{ { 0.0f, 0.25f * m_aspectRatio, 0.0f }, { 1.0f, 0.0f, 0.0f, 1.0f } },
-			{ { 0.25f, -0.25f * m_aspectRatio, 0.0f }, { 0.0f, 1.0f, 0.0f, 1.0f } },
-			{ { -0.25f, -0.25f * m_aspectRatio, 0.0f }, { 0.0f, 0.0f, 1.0f, 1.0f } }
+			{ { 0.0f, 0.25f * m_aspectRatio, 0.0f }, { 1.0f, 1.0f, 0.0f, 1.0f } },
+			{ { 0.25f, -0.25f * m_aspectRatio, 0.0f }, { 0.0f, 1.0f, 1.0f, 1.0f } },
+			{ { -0.25f, -0.25f * m_aspectRatio, 0.0f }, { 1.0f, 0.0f, 1.0f, 1.0f } }
 		};
 
 		const UINT vertexBufferSize = sizeof(triangleVertices);
@@ -370,6 +617,8 @@ void D3D12HelloTriangle::LoadAssets()
 // Update frame-based values.
 void D3D12HelloTriangle::OnUpdate()
 {
+	// #DXR Extra: Perspective Camera 
+	UpdateCameraBuffer();
 }
 
 // Render the scene.
@@ -421,19 +670,78 @@ void D3D12HelloTriangle::PopulateCommandList()
 	m_commandList->OMSetRenderTargets(1, &rtvHandle, FALSE, nullptr);
 
 	// Record commands.
-	const float clearColor[] = { 0.0f, 0.2f, 0.4f, 1.0f };
+	//const float clearColor[] = { 0.0f, 0.2f, 0.4f, 1.0f };
 	if (m_raster)
 	{
 		const float clearColor[] = { 0.0f, 0.2f, 0.4f, 1.0f };
-		m_commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+		// #DXR Extra: Perspective Camera
+		std::vector< ID3D12DescriptorHeap* > heaps = { m_constHeap.Get() };
+		m_commandList->SetDescriptorHeaps(static_cast<UINT>(heaps.size()), heaps.data());
+		// set the root descriptor table 0 to the constant buffer descriptor heap 
+		m_commandList->SetGraphicsRootDescriptorTable(0, m_constHeap->GetGPUDescriptorHandleForHeapStart());
 		m_commandList->ClearRenderTargetView(rtvHandle, clearColor, 0, nullptr);
+		m_commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 		m_commandList->IASetVertexBuffers(0, 1, &m_vertexBufferView);
 		m_commandList->DrawInstanced(3, 1, 0, 0);
 	}
 	else
 	{
-		const float clearColor[] = { 0.6f, 0.8f, 0.4f, 1.0f };
-		m_commandList->ClearRenderTargetView(rtvHandle, clearColor, 0, nullptr);
+		/*const float clearColor[] = { 0.6f, 0.8f, 0.4f, 1.0f };
+		m_commandList->ClearRenderTargetView(rtvHandle, clearColor, 0, nullptr);*/
+		// #DXR
+		// Bind the descriptor heap giving access to the top-level acceleration
+		// structure, as well as the raytracing output
+		std::vector<ID3D12DescriptorHeap*> heaps = { m_srvUavHeap.Get() };
+		m_commandList->SetDescriptorHeaps(static_cast<UINT>(heaps.size()), heaps.data());
+		// On the last frame, the raytracing output was used as a copy source, to
+		// copy its contents into the render target. Now we need to transition it to
+		// a UAV so that the shaders can write in it.
+		CD3DX12_RESOURCE_BARRIER transition = CD3DX12_RESOURCE_BARRIER::Transition(m_outputResource.Get(), D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+		m_commandList->ResourceBarrier(1, &transition);
+		// Setup the raytracing task
+		D3D12_DISPATCH_RAYS_DESC desc = {};
+		// The layout of the SBT is as follows: ray generation shader, miss
+		// shaders, hit groups. As described in the CreateShaderBindingTable method,
+		// all SBT entries of a given type have the same size to allow a fixed stride.
+		// The ray generation shaders are always at the beginning of the SBT.
+		uint32_t rayGenerationSectionSizeInBytes = m_sbtHelper.GetRayGenSectionSize();
+		desc.RayGenerationShaderRecord.StartAddress = m_sbtStorage->GetGPUVirtualAddress();
+		desc.RayGenerationShaderRecord.SizeInBytes = rayGenerationSectionSizeInBytes;
+		// The miss shaders are in the second SBT section, right after the ray
+		// generation shader. We have one miss shader for the camera rays and one
+		// for the shadow rays, so this section has a size of 2*m_sbtEntrySize. We
+		// also indicate the stride between the two miss shaders, which is the size
+		// of a SBT entry
+		uint32_t missSectionSizeInBytes = m_sbtHelper.GetMissSectionSize();
+		desc.MissShaderTable.StartAddress = m_sbtStorage->GetGPUVirtualAddress() + rayGenerationSectionSizeInBytes;
+		desc.MissShaderTable.SizeInBytes = missSectionSizeInBytes;
+		desc.MissShaderTable.StrideInBytes = m_sbtHelper.GetMissEntrySize();
+		// The hit groups section start after the miss shaders. In this sample we
+		// have one 1 hit group for the triangle
+		uint32_t hitGroupsSectionSize = m_sbtHelper.GetHitGroupSectionSize();
+		desc.HitGroupTable.StartAddress = m_sbtStorage->GetGPUVirtualAddress() + rayGenerationSectionSizeInBytes + missSectionSizeInBytes;
+		desc.HitGroupTable.SizeInBytes = hitGroupsSectionSize;
+		desc.HitGroupTable.StrideInBytes = m_sbtHelper.GetHitGroupEntrySize();
+		// Dimensions of the image to render, identical to a kernel launch dimension
+		desc.Width = GetWidth();
+		desc.Height = GetHeight();
+		desc.Depth = 1;
+		// Bind the raytracing pipeline
+		m_commandList->SetPipelineState1(m_rtStateObject.Get());
+		// Dispatch the rays and write to the raytracing output
+		m_commandList->DispatchRays(&desc);
+		// The raytracing output needs to be copied to the actual render target used
+		// for display. For this, we need to transition the raytracing output from a
+		// UAV to a copy source, and the render target buffer to a copy destination.
+		// We can then do the actual copy, before transitioning the render target
+		// buffer into a render target, that will be then used to display the image
+		transition = CD3DX12_RESOURCE_BARRIER::Transition(m_outputResource.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE);
+		m_commandList->ResourceBarrier(1, &transition);
+		transition = CD3DX12_RESOURCE_BARRIER::Transition(m_renderTargets[m_frameIndex].Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_COPY_DEST);
+		m_commandList->ResourceBarrier(1, &transition);
+		m_commandList->CopyResource(m_renderTargets[m_frameIndex].Get(), m_outputResource.Get());
+		transition = CD3DX12_RESOURCE_BARRIER::Transition(m_renderTargets[m_frameIndex].Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_RENDER_TARGET);
+		m_commandList->ResourceBarrier(1, &transition);
 	}
 
 	// Indicate that the back buffer will now be used to present.
@@ -462,4 +770,85 @@ void D3D12HelloTriangle::WaitForPreviousFrame()
 	}
 
 	m_frameIndex = m_swapChain->GetCurrentBackBufferIndex();
+}
+
+
+//----------------------------------------------------------------------------------
+//
+// The camera buffer is a constant buffer that stores the transform matrices of
+// the camera, for use by both the rasterization and raytracing. This method
+// allocates the buffer where the matrices will be copied. For the sake of code
+// clarity, it also creates a heap containing only this buffer, to use in the
+// rasterization path.
+//
+// #DXR Extra: Perspective Camera
+void D3D12HelloTriangle::CreateCameraBuffer() {
+	uint32_t nbMatrix = 4;
+	// view, perspective, viewInv, perspectiveInv 
+	m_cameraBufferSize = nbMatrix * sizeof(XMMATRIX);
+	// Create the constant buffer for all matrices 
+	m_cameraBuffer = nv_helpers_dx12::CreateBuffer(m_device.Get(), m_cameraBufferSize, D3D12_RESOURCE_FLAG_NONE, D3D12_RESOURCE_STATE_GENERIC_READ, nv_helpers_dx12::kUploadHeapProps);
+	// Create a descriptor heap that will be used by the rasterization shaders 
+	m_constHeap = nv_helpers_dx12::CreateDescriptorHeap(m_device.Get(), 1, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, true);
+	// Describe and create the constant buffer view. 
+	D3D12_CONSTANT_BUFFER_VIEW_DESC cbvDesc = {};
+	cbvDesc.BufferLocation = m_cameraBuffer->GetGPUVirtualAddress();
+	cbvDesc.SizeInBytes = m_cameraBufferSize;
+	// Get a handle to the heap memory on the CPU side, to be able to write the 
+	// descriptors directly 
+	D3D12_CPU_DESCRIPTOR_HANDLE srvHandle = m_constHeap->GetCPUDescriptorHandleForHeapStart();
+	m_device->CreateConstantBufferView(&cbvDesc, srvHandle);
+}
+
+// #DXR Extra: Perspective Camera
+//--------------------------------------------------------------------------------
+// Create and copies the viewmodel and perspective matrices of the camera
+//
+void D3D12HelloTriangle::UpdateCameraBuffer() {
+	std::vector<XMMATRIX> matrices(4);
+	// Initialize the view matrix, ideally this should be based on user 
+	// interactions The lookat and perspective matrices used for rasterization are 
+	// defined to transform world-space vertices into a [0,1]x[0,1]x[0,1] camera space 
+	XMVECTOR Eye = XMVectorSet(1.5f, 1.5f, 1.5f, 0.0f);
+	XMVECTOR At = XMVectorSet(0.0f, 0.0f, 0.0f, 0.0f);
+	XMVECTOR Up = XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f);
+	const glm::mat4& mat = nv_helpers_dx12::CameraManip.getMatrix();
+	memcpy(&matrices[0].r->m128_f32[0], glm::value_ptr(mat), 16 * sizeof(float));
+	float fovAngleY = 45.0f * XM_PI / 180.0f;
+	matrices[1] = XMMatrixPerspectiveFovRH(fovAngleY, m_aspectRatio, 0.1f, 1000.0f);
+	// Raytracing has to do the contrary of rasterization: rays are defined in
+	// camera space, and are transformed into world space. To do this, we need to 
+	// store the inverse matrices as well. 
+	XMVECTOR det;
+	matrices[2] = XMMatrixInverse(&det, matrices[0]);
+	matrices[3] = XMMatrixInverse(&det, matrices[1]);
+	// Copy the matrix contents 
+	uint8_t* pData;
+	ThrowIfFailed(m_cameraBuffer->Map(0, nullptr, (void**)&pData));
+	memcpy(pData, matrices.data(), m_cameraBufferSize);
+	m_cameraBuffer->Unmap(0, nullptr);
+}
+
+//--------------------------------------------------------------------------------------------------
+//
+//
+void D3D12HelloTriangle::OnButtonDown(UINT32 lParam)
+{
+	nv_helpers_dx12::CameraManip.setMousePosition(-GET_X_LPARAM(lParam), -GET_Y_LPARAM(lParam));
+}
+//--------------------------------------------------------------------------------------------------
+//
+//
+void D3D12HelloTriangle::OnMouseMove(UINT8 wParam, UINT32 lParam)
+{
+	using nv_helpers_dx12::Manipulator;
+	Manipulator::Inputs inputs;
+	inputs.lmb = wParam & MK_LBUTTON;
+	inputs.mmb = wParam & MK_MBUTTON;
+	inputs.rmb = wParam & MK_RBUTTON;
+	if (!inputs.lmb && !inputs.rmb && !inputs.mmb) return; // no mouse button pressed 
+	inputs.ctrl = GetAsyncKeyState(VK_CONTROL);
+	inputs.shift = GetAsyncKeyState(VK_SHIFT);
+	inputs.alt = GetAsyncKeyState(VK_MENU);
+	CameraManip.mouseMove(-GET_X_LPARAM(lParam), -GET_Y_LPARAM(lParam), inputs);
 }

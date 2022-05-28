@@ -26,8 +26,9 @@ public:
 	virtual void OnDestroy() = 0;
 
 	// Samples override the event handlers to handle specific messages.
-	virtual void OnKeyDown(UINT8 /*key*/)   {}
-	virtual void OnKeyUp(UINT8 /*key*/)     {}
+	virtual void OnKeyDown(UINT8 /*key*/) {}
+	virtual void OnKeyUp(UINT8 /*key*/) {}
+
 
 	// Accessors.
 	UINT GetWidth() const           { return m_width; }
@@ -35,6 +36,8 @@ public:
 	const WCHAR* GetTitle() const   { return m_title.c_str(); }
 
 	void ParseCommandLineArgs(_In_reads_(argc) WCHAR* argv[], int argc);
+	virtual void OnButtonDown(UINT32) {}
+	virtual void OnMouseMove(UINT8, UINT32) {}
 
 protected:
 	std::wstring GetAssetFullPath(LPCWSTR assetName);
