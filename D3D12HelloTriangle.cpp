@@ -697,10 +697,9 @@ void D3D12HelloTriangle::CreateRaytracingPipeline()
 	// has to be done explicitly in the lines below. Note that a single library 
 	// can contain an arbitrary number of symbols, whose semantic is given in HLSL 
 	// using the [shader("xxx")] syntax 
-	pipeline.AddLibrary(m_rayGenLibrary.Get(), { L"RayGen" });
-	pipeline.AddLibrary(m_missLibrary.Get(), { L"Miss" });
-	// #DXR Extra: Per-Instance Data
-	pipeline.AddLibrary(m_hitLibrary.Get(), { L"ClosestHit", L"PlaneClosestHit" });
+	pipeline.AddLibrary(m_rayGenLibrary.Get(), {L"RayGen"});
+	pipeline.AddLibrary(m_missLibrary.Get(), {L"Miss"});
+	pipeline.AddLibrary(m_hitLibrary.Get(), { L"ClosestHit", L"CubeClosestHit", L"PlaneClosestHit" });
 	pipeline.AddLibrary(m_shadowLibrary.Get(), { L"ShadowClosestHit", L"ShadowMiss" });
 	// To be used, each DX12 shader needs a root signature defining which 
 
@@ -724,7 +723,7 @@ void D3D12HelloTriangle::CreateRaytracingPipeline()
 	// Hit group for the triangles, with a shader simply interpolating vertex 
 
 	pipeline.AddHitGroup(L"HitGroup", L"ClosestHit");
-	// #DXR Extra: Per-Instance Data
+	pipeline.AddHitGroup(L"CubeHitGroup", L"CubeClosestHit");
 	pipeline.AddHitGroup(L"PlaneHitGroup", L"PlaneClosestHit");
 	// #DXR Extra - Another ray type
 	// Hit group for all geometry when hit by a shadow ray
@@ -738,7 +737,7 @@ void D3D12HelloTriangle::CreateRaytracingPipeline()
 	// #DXR Extra - Another ray type
 	pipeline.AddRootSignatureAssociation(m_missSignature.Get(), { L"Miss", L"ShadowMiss" });
 	// #DXR Extra: Per-Instance Data
-	pipeline.AddRootSignatureAssociation(m_hitSignature.Get(), { L"HitGroup", L"PlaneHitGroup" });
+	pipeline.AddRootSignatureAssociation(m_hitSignature.Get(), { L"HitGroup",L"CubeHitGroup", L"PlaneHitGroup" });
 	// #DXR Extra - Another ray type
 	pipeline.AddRootSignatureAssociation(m_shadowSignature.Get(), { L"ShadowHitGroup" });
 	// The payload size defines the maximum size of the data carried by the rays, 
@@ -767,7 +766,8 @@ void D3D12HelloTriangle::CreateRaytracingPipeline()
 	ThrowIfFailed(m_rtStateObject->QueryInterface(IID_PPV_ARGS(&m_rtStateObjectProps)));
 }
 
-void D3D12HelloTriangle::CreateRaytracingOutputBuffer() {
+void D3D12HelloTriangle::CreateRaytracingOutputBuffer() 
+{
 	D3D12_RESOURCE_DESC resDesc = {};
 	resDesc.DepthOrArraySize = 1;
 	resDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
@@ -877,7 +877,7 @@ void D3D12HelloTriangle::CreateShaderBindingTable() {
 	// copied to the default heap for performance. 
 	m_sbtStorage = nv_helpers_dx12::CreateBuffer(m_device.Get(), sbtSize, D3D12_RESOURCE_FLAG_NONE, D3D12_RESOURCE_STATE_GENERIC_READ, nv_helpers_dx12::kUploadHeapProps);
 	if (!m_sbtStorage) {
-		throw std::logic_error("Could not allocate the shader binding table");
+		throw std::logic_error("Could not allocate the shader binding table.");
 	}
 	// Compile the SBT from the shader and parameters info 
 	m_sbtHelper.Generate(m_sbtStorage.Get(), m_rtStateObjectProps.Get());
@@ -972,12 +972,12 @@ void D3D12HelloTriangle::OnMouseMove(UINT8 wParam, UINT32 lParam)
 void D3D12HelloTriangle::CreatePlaneVB() {
 	// Define the geometry for a plane. 
 	Vertex planeVertices[] = {
-		{{-1.5f, -.8f, 01.5f}, {1.0f, 1.0f, 1.0f, 1.0f}}, // 0 
-		{{-1.5f, -.8f, -1.5f}, {1.0f, 1.0f, 1.0f, 1.0f}}, // 1 
-		{{01.5f, -.8f, 01.5f}, {1.0f, 1.0f, 1.0f, 1.0f}}, // 2 
-		{{01.5f, -.8f, 01.5f}, {1.0f, 1.0f, 1.0f, 1.0f}}, // 2 
-		{{-1.5f, -.8f, -1.5f}, {1.0f, 1.0f, 1.0f, 1.0f}}, // 1 
-		{{01.5f, -.8f, -1.5f}, {1.0f, 1.0f, 1.0f, 1.0f}} // 4 
+		{{-1.5f, -.8f, 01.5f}, {1.0f, 0.0f, 0.5f, 1.0f}}, // 0 
+		{{-1.5f, -.8f, -1.5f}, {1.0f, 0.0f, 0.5f, 1.0f}}, // 1 
+		{{01.5f, -.8f, 01.5f}, {1.0f, 0.0f, 0.5f, 1.0f}}, // 2 
+		{{01.5f, -.8f, 01.5f}, {1.0f, 0.0f, 0.5f, 1.0f}}, // 2 
+		{{-1.5f, -.8f, -1.5f}, {1.0f, 0.0f, 0.5f, 1.0f}}, // 1 
+		{{01.5f, -.8f, -1.5f}, {1.0f, 0.0f, 0.5f, 1.0f}} // 4 
 	};
 	const UINT planeBufferSize = sizeof(planeVertices);
 
