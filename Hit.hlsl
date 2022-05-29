@@ -51,8 +51,12 @@ void ClosestHit(inout HitInfo payload, Attributes attrib)
 [shader("closesthit")]
 void CubeClosestHit(inout HitInfo payload, Attributes attrib)
 {
+    float3 AA = (1.0, 0.0, 0.0);
+    float3 BB = (0.0, 1.0, 0.0);
+    float3 CC = (0.0, 0.0, 1.0);
     float3 barycentrics = float3(1.f - attrib.bary.x - attrib.bary.y, attrib.bary.x, attrib.bary.y);
     float3 hitColor = float3(0.74, 0.89, 0.71);
+    //float3 hitColor = AA * barycentrics.x + BB * barycentrics.y + CC * barycentrics.z;
     payload.colorAndDistance = float4(hitColor, RayTCurrent());
 }
 
