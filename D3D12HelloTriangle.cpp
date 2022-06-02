@@ -1102,7 +1102,6 @@ void D3D12HelloTriangle::CreateGlobalConstantBuffer()
 	m_globalConstantBuffer->Unmap(0, nullptr);
 }
 
-
 //-----------------------------------------------------------------------------
 //
 // #DXR Extra: Per-Instance Data
